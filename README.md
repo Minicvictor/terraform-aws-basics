@@ -237,7 +237,7 @@ This confirms:
 
 **Screenshot of AWS Console showing the created resources:**
 
-<!-- ![Terraform apply output and AWS Console resources](./screenshots/terraform-apply-output.png) -->
+ ![Terraform apply output and AWS Console resources](./screenshots/terraform-apply-output.png)
 
 ## Verifying the Deployment
 
