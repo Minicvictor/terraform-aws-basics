@@ -30,30 +30,72 @@ The goal is to demonstrate IaC fundamentals — declarative resource definitions
 ## Architecture
 
 ```
-                    ┌─────────────────────────┐
-                    │   Terraform Config      │
-                    │  (provider.tf, main.tf) │
-                    └───────────┬─────────────┘
-                                │ terraform apply
-                                ▼
-                    ┌─────────────────────────┐
-                    │      AWS Account        │
-                    │      (us-east-1)        │
-                    └───────────┬─────────────┘
-                ┌───────────────┼───────────────┐
-                ▼               ▼               ▼
-         ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-         │  IAM User   │ │  IAM User   │ │  IAM User   │
-         │ developer1  │ │ developer2  │ │ developer3  │
-         └─────────────┘ └─────────────┘ └─────────────┘
-
-                    ┌─────────────────────────────┐
-                    │         S3 Bucket           │
-                    │ minicvictor-terraform-      │
-                    │ aws-basics                  │
-                    │ (versioning: enabled)       │
-                    └─────────────────────────────┘
+ STEP 1                STEP 2               STEP 3                STEP 4
+┌───────────┐      ┌─────────────┐     ┌─────────────┐      ┌──────────────┐
+│  Write    │      │  terraform  │     │  terraform  │      │  terraform   │
+│  .tf      │ ───► │    init     │ ──► │    plan     │ ───► │    apply     │
+│  files    │      │             │     │             │      │              │
+└───────────┘      └─────────────┘     └─────────────┘      └──────┬───────┘
+provider.tf         Downloads the       Compares config              │
+main.tf             hashicorp/aws       to current state,            │
+outputs.tf          provider (~>6.0)    shows an execution           │
+                     into .terraform/    plan (add/change/            │
+                                         destroy) — nothing           │
+                                         is created yet                │
+                                                                       ▼
+                                                          ┌─────────────────────────┐
+                                                          │   terraform.tfstate     │
+                                                          │  (local state file —    │
+                                                          │   records what exists,  │
+                                                          │   never committed)      │
+                                                          └────────────┬────────────┘
+                                                                       │
+                                                                       ▼
+                                                          ┌─────────────────────────┐
+                                                          │      AWS Account        │
+                                                          │      (us-east-1)        │
+                                                          └────────────┬────────────┘
+                                          ┌────────────────────────────┼───────────────────────┐
+                                          ▼                            ▼                        ▼
+                                ┌─────────────────┐                                   ┌─────────────────────┐
+                                │  aws_iam_user    │                                   │   aws_s3_bucket      │
+                                │  (for_each loop) │                                   │  + aws_s3_bucket_    │
+                                └────────┬─────────┘                                   │    versioning        │
+                        ┌────────────────┼────────────────┐                          └───────────┬───────────┘
+                        ▼                ▼                ▼                                      ▼
+                 ┌────────────┐  ┌────────────┐   ┌────────────┐                     ┌─────────────────────────┐
+                 │ developer1 │  │ developer2 │   │ developer3 │                     │ minicvictor-terraform-  │
+                 │  IAM User  │  │  IAM User  │   │  IAM User  │                     │      aws-basics         │
+                 └────────────┘  └────────────┘   └────────────┘                     │ (Versioning: Enabled)   │
+                                                                                       └─────────────────────────┘
 ```
+
+### Step-by-step explanation
+
+**Step 1 — Write the `.tf` files**
+You author `provider.tf` (which provider and region to use), `main.tf` (what resources to create), and `outputs.tf` (what values to display after creation). Nothing exists in AWS yet — this is just declarative code sitting on your machine.
+
+**Step 2 — `terraform init`**
+Terraform reads `provider.tf`, sees it needs `hashicorp/aws` version `~> 6.0`, and downloads that provider plugin into a local `.terraform/` folder. This folder is excluded from Git via `.gitignore` since it can always be regenerated by re-running `init`.
+
+**Step 3 — `terraform plan`**
+Terraform compares your `.tf` files against its current understanding of what exists (via the state file, or nothing at all on a first run) and prints an execution plan: what will be created, changed, or destroyed. This is a **dry run** — no real infrastructure is touched yet, which is what makes it safe to review before committing to changes.
+
+**Step 4 — `terraform apply`**
+Once you confirm with `yes`, Terraform executes the plan against the real AWS API. This is the only step that actually creates resources.
+
+**State file (`terraform.tfstate`)**
+As `apply` runs, Terraform records everything it creates in a local state file. This file is Terraform’s source of truth for “what currently exists” on future `plan`/`apply` runs — it’s why Terraform can tell you it needs to create 3 users the first time, but “no changes” the second time you run `apply` with the same config. It’s excluded from Git because it can contain sensitive resource metadata.
+
+**AWS Account (us-east-1)**
+The actual environment where resources land, as fixed by the `region` argument in `provider.tf`.
+
+**Resource fan-out**
+
+- The single `aws_iam_user.developers` block uses a `for_each` loop over `["developer1", "developer2", "developer3"]`, so **one block in code produces three independent IAM users** in AWS.
+- The `aws_s3_bucket` and `aws_s3_bucket_versioning` resources are linked — the second one references the first (`bucket = aws_s3_bucket.main.id`) to turn on versioning for that specific bucket.
+
+In short: **write → init → plan → apply**, with the state file tracking reality in between, resulting in real, reproducible AWS resources.
 
 ## Resources Created
 
@@ -167,6 +209,36 @@ After a successful apply, Terraform prints:
 - `s3_bucket_name` — the bucket name
 - `s3_bucket_arn` — the bucket ARN
 
+## Deployment Output
+
+After running `terraform apply` and confirming with `yes`, Terraform successfully provisioned all resources and printed the following outputs:
+
+```
+Outputs:
+
+iam_user_arns = [
+  "arn:aws:iam::612216xxx808:user/developer1",
+  "arn:aws:iam::612216xxx808:user/developer2",
+  "arn:aws:iam::612216xxx808:user/developer3",
+]
+iam_user_names = [
+  "developer1",
+  "developer2",
+  "developer3",
+]
+s3_bucket_arn = "arn:aws:s3:::minicvictor-terraform-aws-basics"
+s3_bucket_name = "minicvictor-terraform-aws-basics"
+```
+
+This confirms:
+
+- All three IAM users (`developer1`, `developer2`, `developer3`) were created successfully, each with a unique ARN under the AWS account.
+- The S3 bucket `minicvictor-terraform-aws-basics` was created successfully with a valid ARN.
+
+**Screenshot of AWS Console showing the created resources:**
+
+<!-- ![Terraform apply output and AWS Console resources](./screenshots/terraform-apply-output.png) -->
+
 ## Verifying the Deployment
 
 You can confirm the resources exist either via the AWS Console or the CLI:
@@ -198,16 +270,9 @@ Type `yes` when prompted. This permanently deletes the IAM users and the S3 buck
 - **State files are excluded from version control.** `terraform.tfstate` can contain sensitive information (including resource IDs and, depending on the resource type, secrets) and should never be committed. See `.gitignore`.
 - **Local state only.** This project uses local state for simplicity. In a team or production setting, use a **remote backend** (e.g., an S3 bucket with DynamoDB state locking) so multiple engineers can collaborate safely without state conflicts.
 - **Bucket name uniqueness.** S3 bucket names are globally unique across *all* AWS accounts. If `minicvictor-terraform-aws-basics` is already taken, update the `bucket` argument in `main.tf` before applying.
-
-## Troubleshooting
-
-|Issue                                |Likely Cause                      |Fix                                                               |
-|-------------------------------------|----------------------------------|------------------------------------------------------------------|
-|`BucketAlreadyExists` error          |Bucket name is taken globally     |Change the `bucket` value in `main.tf` to something more unique   |
-|`No valid credential sources found`  |AWS CLI not configured            |Run `aws configure` and re-try                                    |
-
+  
 
 ## Author
 
-**Egwu chidiebere Agha** — Cloud & DevOps Engineering Student
+**Egwu** — Cloud & DevOps Engineering Student
 GitHub: [@minicvictor](https://github.com/minicvictor)
